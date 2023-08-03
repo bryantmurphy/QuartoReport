@@ -1,0 +1,657 @@
+---
+title: "Predicting PSA Levels and Pathological Scoring from Various Clinical Measures in Prostate Cancer Patients"
+author: Bryan Murphy
+affiliation: University of Kansas Medical Center
+date: last-modified
+format: 
+  html: 
+    toc: true
+editor: visual
+execute: 
+  echo: false
+  warning: false
+fig-align: center
+bibliography: references.bib
+csl: american-society-for-microbiology.csl
+---
+
+```{r}
+#| label: load-packages-and-data
+#| include: false
+
+library(readxl)
+library(tidyverse)
+library(ggpubr)
+library(patchwork)
+library(knitr)
+library(gt)
+library(gtsummary)
+library(modelr)
+library(broom)
+library(ordinal)
+
+pcancer <- read_xlsx("pcancer.xlsx") %>% mutate(seminal = as.logical(seminal), score = as.factor(score)) %>% dplyr::select(-idnum)
+```
+
+## Abstract
+
+Prostate cancer is the second most common type of cancer and is a leading cause of cancer death among men in the United States. In search of potential diagnostic and clinical measures associated with severe outcomes, this study examines the relationship between serum prostate-specific antigen (PSA) levels and various other clinical measures in a cohort of 97 men receiving prostatectomys. The investigation revealed a strong correlation between transformed PSA and cancer volume in addition to significant associations with prostate weight, seminal vesicle invasion, and Gleason score -- all of which could be modeled by multiple linear regression. However, a model for predicting Gleason scores using ordinal logistic regression demonstrated limited success with variables other than lpsa. Overall, the analysis confirms findings from previous studies and highlights the need for a multi-dimensional approach to enhance accuracy in predicting disease pathology.
+
+## Introduction
+
+Prostate cancer is the second most frequent malignancy in men worldwide, surpassed only by lung cancer. In 2018 alone, there were 1,276,106 new cases causing 358,989 deaths [@Bray2018]. Both the incidence and mortality of prostate cancer correlate with increasing age, with the average age at the time of diagnosis being 66 years. Patients can remain asymptomatic in the initial stages of the disease, since it tends to progress slowly, sometimes requiring minimal to no treatment. However, common complaints include difficulties with urination, increased frequency of urination, and nocturia, all of which can also occur due to prostatic hypertrophy. As the disease advances, symptoms may involve urinary retention and severe back pain, with bone metastases frequently affecting the axial skeleton. Many prostate cancers are detected by elevated plasmatic levels of prostate-specific antigen (PSA \> 4 ng/mL), a glycoprotein normally expressed by prostate tissue. However, because men without cancer have also been found with elevated PSA, a tissue biopsy is the standard of care to confirm the cancer's presence [@Rawla2019].
+
+The **Prostate Cancer Dataset** comes from a study by Stamey *et al.,* in which researchers first examined the correlation between the level of PSA and seven other clinical measures in 97 men with late-stage prostate cancer who were undergoing a radical prostatectomy [@Stamey1989; @Rao2008]. The full list of recorded variables for this dataset is presented in @tbl-raw-data.
+
+<div>
+
+| Variable | Variable Name                       | Description                                                                                                                                                         |
+|:--------------:|------------------------|--------------------------------|
+|    1     | `psa`: PSA level                    | Serum prostate-specific antigen level (*ng/ml*)                                                                                                                     |
+|    2     | `cancerv`: tumor volume             | Estimate of prostate tumor volume (*cc*)                                                                                                                            |
+|    3     | `weight`: prostate weight           | Excisized prostate wight (*g*)                                                                                                                                      |
+|    4     | `age`: age                          | Age of patient (*years*)                                                                                                                                            |
+|    5     | `hyperplasia`: benign hyperplasia   | Amount of benign prostatic hyperplasia (*cm²*)                                                                                                                      |
+|    6     | `seminal`: seminal vesicle invasion | Presence of seminal vesicle invasion (boolean)                                                                                                                      |
+|    7     | `capsular`: capsular penetration    | Degree of capsular penetration (*cm*)                                                                                                                               |
+|    8     | `score`: Gleason score              | Pathologically determined grade of disease using a total score of two patterns (summed scores were either 6, 7, or 8 with higher scores indicating worse prognosis) |
+
+: Prostate Cancer Dataset variables {#tbl-raw-data .hover}
+
+</div>
+
+This report aims to re-evaluate Stamey and colleagues' initial findings on PSA in the Prostate Cancer Dataset in addition to making a new predictive model for disease pathology.
+
+## Results
+
+Simple descriptive statistics on the raw data in @tbl-data-summary reveal inconsistencies between the mean and median for numerous clinical outcomes (*i.e.,* the distributions of these variables are skewed), making them poor candidates for parametric modeling. Since `psa`, `cancerv`, and `weight` all have non-zero minima with positive skewing, these variables were first log-transformed into `lpsa`, `lcancerv`, and `lweight`, respectively. As seen in @fig-transformed-vars, box plots and quantile-quantile plots depict approximately normal distributions with minor tail skewing after the transformation. Notably, patient 36 had a recorded prostate weight of 450 grams, which is not feasible even in extreme cases of hyperplasia. This value was corrected to 45 grams prior to log transformation, decreasing the variable's maximum to 122 grams. Patient `age` was already close to normal with low variance (IQR=60-68 years of age) and was therefore not transformed.
+
+```{r}
+#| label: fig-transformed-vars
+#| layout-nrow: 2
+#| fig-cap:  Normalization of variables. For each variable (a-d), the 4 possible subplots include (i) a box plot of the variable's raw values, (ii) a quantile-quantile plot of the variable's raw values, (iii) a box plot of the variable's log-transformed values, and (iv) a quantile-quantile plot of the variable's log-transformed values.
+#| fig-subcap: 
+#|   - psa
+#|   - cancerv
+#|   - weight
+#|   - age
+
+
+quickTheme <- theme_classic() + 
+  theme(axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank(),
+        plot.title = element_text(hjust = 0.5, vjust = 1, face = "bold"))
+
+marg <- theme(plot.margin = unit(c(0.5,1,0.5,1), "cm"))
+
+v.psa1 <- ggplot(pcancer) + 
+  geom_boxplot(aes(y = psa)) + 
+  labs(title = "Raw") + 
+  quickTheme + marg
+v.psa2 <- ggplot(pcancer) + 
+  geom_boxplot(aes(y = log(psa))) + 
+  labs(title = "Log-transformed") + 
+  quickTheme + marg
+v.psa3 <- ggqqplot(pcancer$psa) + theme_classic() + marg
+v.psa4 <- ggqqplot(log(pcancer$psa)) + theme_classic() + marg
+
+v.psa1 + v.psa3 + v.psa2 + v.psa4 +
+  plot_layout(ncol = 2, byrow = FALSE) +
+  plot_annotation(tag_levels = 'i')
+
+
+
+v.cancerv1 <- ggplot(pcancer) + 
+  geom_boxplot(aes(y = cancerv)) + 
+  labs(title = "Raw") + 
+  quickTheme + marg
+v.cancerv2 <- ggplot(pcancer) + 
+  geom_boxplot(aes(y = log(cancerv))) + 
+  labs(title = "Log-transformed") + 
+  quickTheme + marg
+v.cancerv3 <- ggqqplot(pcancer$cancerv) + theme_classic() + marg
+v.cancerv4 <- ggqqplot(log(pcancer$cancerv)) + theme_classic() + marg
+
+v.cancerv1 + v.cancerv3 + v.cancerv2 + v.cancerv4 +
+  plot_layout(ncol = 2, byrow = FALSE) +
+  plot_annotation(tag_levels = 'i')
+
+
+
+# correct obvious outliar 
+pcancer_o <- mutate(pcancer, weight = ifelse(weight == 450.339, 45.034, weight))
+
+v.weight1 <- ggplot(pcancer) + 
+  geom_boxplot(aes(y = weight)) + 
+  labs(title = "Raw") + 
+  quickTheme + marg
+v.weight2 <- ggplot(pcancer_o) + 
+  geom_boxplot(aes(y = log(weight))) + 
+  labs(title = "Log-transformed") + 
+  quickTheme + marg
+v.weight3 <- ggqqplot(pcancer$weight) + theme_classic() + marg
+v.weight4 <- ggqqplot(log(pcancer_o$weight)) + theme_classic() + marg
+
+v.weight1 + v.weight3 + v.weight2 + v.weight4 +
+  plot_layout(ncol = 2, byrow = FALSE) +
+  plot_annotation(tag_levels = 'i')
+
+
+
+v.age1 <- ggplot(pcancer) +
+  geom_boxplot(aes(y = age)) +
+  labs(title = "Raw") +
+  quickTheme + marg
+v.age3 <- ggqqplot(pcancer$age) + 
+  labs(title = "Raw") +
+  theme_classic()  +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1, face = "bold")) +
+  marg
+
+v.age1 + v.age3 + 
+  plot_layout(ncol = 2, byrow = FALSE) +
+  plot_annotation(tag_levels = 'i')
+```
+
+Two additional continuous variables, `hyperplasia` and `capsular`, could not be log transformed due to a high frequency (`r round(sum(pcancer$hyperplasia == 0.0000)/length(pcancer$hyperplasia),2)`-`r round(sum(pcancer$capsular == 0.0000)/length(pcancer$capsular),2)`) of zero values. Nevertheless, the discrete variables `seminal` (binary) and `score` (ordered) have sufficient category representation for further analysis, as there are 21 patients with seminal vesicle invasion and at least 21 patients with each of the three calculated Gleason scores.
+
+```{r}
+#| label: tbl-data-summary
+#| layout-ncol: 2
+#| tbl-cap: Descriptive statistics 
+#| tbl-subcap: 
+#|   - Raw data
+#|   - Log-transformed data
+
+tbl_summary(pcancer, 
+            digits = list(-age ~ c(1),
+                          all_categorical() ~ c(0, 1)),
+            statistic = list(all_continuous() ~ "{mean} ({p25}, {median}, {p75}) [{min}, {max}]",
+                             all_categorical() ~ "{n} ({p}%)")) %>%
+  modify_header(label = "**Variable**")
+
+pcanc.log <- pcancer_o %>% mutate(lpsa = log(psa),
+                                lcancerv = log(cancerv),
+                                lweight = log(weight),
+                                .keep = "unused") %>%
+  dplyr::select("lpsa","lcancerv","lweight","age","hyperplasia","seminal","capsular","score")
+
+tbl_summary(pcanc.log, 
+            digits = list(-age ~ c(1),
+                          all_categorical() ~ c(0, 1)),
+            statistic = list(all_continuous() ~ "{mean} ({p25}, {median}, {p75}) [{min}, {max}]",
+                             all_categorical() ~ "{n} ({p}%)")) %>%
+  modify_header(label = "**Variable**")
+```
+
+Upon initial investigation of the data with a scatterplot matrix pairwise comparison of all variables in @fig-EDA-plot, we can see correlation between a number of continuous-continuous and continuous-categorical variable pairs.
+
+```{r}
+#| label: fig-EDA-plot
+#| fig-cap: Scatterplot matrix of all variables in the transformed prostate cancer dataset. X and Y-axes are defined by the diagonal row of variable tiles with categorical variables converted into numeric representations. (seminal) FALSE = 0; TRUE = 1. (score) 6 = 1; 7 = 2; 8 = 3.
+
+plot(pcanc.log, col = "darkblue")
+```
+
+Indeed, the visually apparent correlations between some variable pairs in the scatterplot matrix are confirmed quantitatively in the @tbl-cormatrix correlation matrix, where `lpsa` and `lcancerv` have the highest Pearson correlation coefficient of 0.73 ($R^2$ =0.53). Other variables, such as `seminal`, `capsular`, and `score`, appear to have moderate correlations with `lpsa`. However, we cannot infer how much each variable contributes to a patient's serum PSA concentration with this data alone.
+
+```{r}
+#| label: tbl-cormatrix
+#| tbl-cap: Correlation matrix of all variables in the transformed prostate cancer dataset
+
+pcanc.lognum <- pcanc.log %>% mutate(seminal = as.numeric(seminal), score = as.numeric(score))
+cor.lognum <- cor(pcanc.lognum) 
+cor.lognum[lower.tri(cor.lognum, diag = TRUE)] <- NA
+cor.lognum <- as.data.frame(cor.lognum) %>% mutate_all(.funs = function(x) round(x, 3))
+cor.fin <- cor.lognum[1:7,2:8, drop = FALSE] %>% rownames_to_column("x")
+
+# knitr::kable(cor.fin) # for docx
+gt(cor.fin) %>%
+  cols_align("center", columns = -"x") %>%
+  data_color(
+    columns = -"x",
+    na_color = "white",
+    method = "numeric",
+    palette = c("darkred", "white", "darkgreen"),
+    domain = c(-1, 0, 1)
+    ) %>%
+  sub_missing(columns = everything(), rows = everything(), missing_text = "---") %>%
+  cols_width(everything() ~ px(70)) %>%
+  cols_label(hyperplasia = "hyperpl.")
+```
+
+Continuous outcome measures with a mix of continuous and categorical independent variables are best modeled by multiple linear regression. Using this approach, `lpsa` can be predicted by the beta coefficients for each independent variable in @tbl-mod7-coef. The *p*-value (type I error rate) for each beta coefficient with respect to its residuals is also reported. Similar to the correlation matrix, this model indicates that `lcancerv` is strongly predictive of `lpsa` with the lowest type I error rate for all predictors. Additionally, `lweight`, `seminal`, and `score` variables have strong predictive power with desirably low type I error rates below five percent.
+
+```{r}
+#| label: tbl-mod7-coef
+#| tbl-cap: Multiple linear regression coefficients
+
+mod7 <- pcanc.log %>% lm(lpsa ~ lcancerv + lweight + age + hyperplasia + seminal + capsular + score, data = .)
+# mod7 %>% broom::tidy()
+# mod7 %>% glance() %>% dplyr::select(adj.r.squared, p.value)
+
+tbl_regression(mod7, 
+               estimate_fun = purrr::partial(style_sigfig, digits = 3)) %>%
+  modify_header(label = "**Predictor**") %>% 
+  modify_table_styling(
+  columns = p.value,
+  rows = p.value < 0.001,
+  fmt_fun = scales::scientific
+)
+
+
+
+mod4 <- pcanc.log %>% lm(lpsa ~ lcancerv + lweight + seminal + score, data = .)
+# mod4 %>% broom::tidy()
+# mod4 %>% glance() %>% dplyr::select(adj.r.squared, p.value)
+```
+
+This multiple linear regression model is more clearly represented by Equation 1:
+
+$$
+\begin{align*}\widehat{lpsa} = &\, 0.581 + 0.498(lcancerv) + 0.534(lweight) \\&- 0.017(age) + 0.040(hyperplasia) + 0.717(seminal = \text{TRUE}) \\&- 0.025(capsular) + 0.142(score = 7) + 0.610(score = 8)\end{align*}
+$$
+
+, where the predicted value of `lpsa` ($\widehat{lpsa}$ or $\widehat{Y}$) is equal to the intercept term 0.581 ($b_0$) plus 0.498 ($b_1$) times the measured value of `lcancerv` ($x_1$) plus 0.534 ($b_2$) times the measured value of `lweight` ($x_2$) minus 0.017 ($b_3$) times the recorded value of `age` ($x_3$) plus 0.040 ($b_4$) times the measured value of `hyperplasia` ($x_4$) plus 0.717 ($b_5$) if the value of `seminal` ($x_5$) is TRUE minus 0.025 ($b_6$) times the recorded value of `capsular` ($x_6$) plus 0.142 ($b_7$) if the value of `score` ($x_7$) is 7 plus 0.610 ($b_8$) if the value of `score` ($x_7$) is 8.
+
+In Equation 1, only the four aforementioned clinical outcomes are significant predictors of `lpsa`. Removing the insignificant continuous predictors results in Equation 2:
+
+$$
+\begin{align*}\widehat{lpsa} = &\, -0.680 + 0.460(lcancerv) + 0.617(lweight) + \\& 0.567(seminal = \text{TRUE}) + 0.134(score = 7) + 0.529(score = 8) \\\end{align*}
+$$
+
+, which explains a rounded equivalent 64% of the variation in Y (adjacent $R^2$ = 0.64) with three fewer independent variables. The reduced complexity of Equation 2 in comparison to Equation 1 is rewarded with increased statistical significance, decreasing the overall type I error rate (𝛼) from 2.97e-18 to 1.19e-19. Despite the decreased 𝛼-value for Equation 2, @fig-mod-pr suggests that the residual values for Equation 1 are slightly more normally distributed -- one of the important assumptions for a multiple linear regression model. Additionally, the slight difference in hundredths place rounded adjacent $R$-squared values corresponds to a residual Mean Squared Error (MSE) increase from 0.43 for Equation 1 to 0.45 for Equation 2.
+
+```{r}
+#| label: fig-mod-pr
+#| layout-nrow: 2
+#| fig-cap: Residual analysis for the two multiple linear regression models. For each equation (a & b), the 3 subplots include (i) a scatterplot of observed vs. predicted lpsa values with the corresponding multiple linear regression smoother line in blue and residual lines in gray, (ii) a scatterplot of residual values vs. predicted lpsa values with a simple linear model smoother line of Y~X in blue, and (iii) a quantile-quantile plot of the residual values.
+#| fig-subcap: 
+#|   - Equation 1 residuals
+#|   - Equation 2 residuals
+
+mod7_pr <- modelr::add_predictions(pcanc.log, mod7, var = "pred") 
+mod7_pr <- modelr::add_residuals(mod7_pr, mod7, var = "resid")
+
+pr7.lm <- ggplot(mod7_pr, aes(x = pred, y = lpsa)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  geom_segment(aes(x = pred, xend = pred, y = lpsa, yend = lpsa - resid), alpha = 0.2) +
+  labs(y = "Observed lpsa", x = "Predicted lpsa") +
+  theme_classic() + 
+  marg
+
+pr7.s <- mod7_pr %>% 
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(method = lm, formula = 'y ~ x') +
+  labs(x = "Predictions", y = "Residuals") +
+  theme_classic() + 
+  marg
+
+pr7.qq <- mod7_pr %>% 
+  ggplot(aes(sample = resid)) +
+  stat_qq() + 
+  stat_qq_line() +
+  labs(x = "Theoretical", y = "Sample") + 
+  theme_classic() + 
+  marg
+
+pr7.lm / (pr7.s + pr7.qq) + plot_annotation(tag_levels = 'i')
+
+mod4_pr <- modelr::add_predictions(pcanc.log, mod4, var = "pred") 
+mod4_pr <- modelr::add_residuals(mod4_pr, mod4, var = "resid")
+
+pr4.lm <- ggplot(mod4_pr, aes(x = pred, y = lpsa)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  geom_segment(aes(x = pred, xend = pred, y = lpsa, yend = lpsa - resid), alpha = 0.2) +
+  labs(y = "Observed lpsa", x = "Predicted lpsa") +
+  theme_classic() + 
+  marg
+
+pr4.s <- mod4_pr %>% 
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(method = lm, formula = 'y ~ x') +
+  labs(x = "Predictions", y = "Residuals") +
+  theme_classic() + 
+  marg
+
+pr4.qq <- mod4_pr %>% 
+  ggplot(aes(sample = resid)) +
+  stat_qq() + 
+  stat_qq_line() +
+  labs(x = "Theoretical", y = "Sample") + 
+  theme_classic() + 
+  marg
+
+pr4.lm / (pr4.s + pr4.qq) + plot_annotation(tag_levels = 'i')
+
+# round(mean(mod7_pr$resid^2),2)
+# round(mean(mod4_pr$resid^2),2)
+```
+
+Intriguingly, there was measured correlation between the two categorical variables `semial` and `score` in @tbl-cormatrix. Because correlation coefficients are typically used to measure the strength of linear relationships between continuous variables, their interpretation for categorical variables are challenging.
+
+As seen in @tbl-cat-stats, there are significant differences in `lpsa`, `lcancerv`, `capsular`, and `score` clinical measures when patients are grouped by those with seminal invasion (`seminal` = TRUE) and those without seminal invasion (`seminal` = FALSE). Test statistics for the continuous variable group comparisons were obtained from Welch two sample *t*-tests and Wilcoxon rank sum tests for the more normally distributed variables in @fig-transformed-vars and for the `hyperplasia` and `capsular` variables, respectively. These test statistics and their corresponding p-values imply that `lcancerv` has the most significant grouped difference between seminal invasion and no seminal invasion, with the group mean for no seminal invasion being 8 standard deviations below the group mean for seminal invasion. Exponentiating the two group means for `lcancerv` to `r round(exp(1.02),2)` grams for `seminal` = FALSE and `r round(exp(2.55),2)` grams for `seminal` = TRUE provides a clearer comparison of the non-log-transformed values. In agreement with the `lpsa` multiple linear regression models, there is also a highly significant difference between the `seminal`-grouped means for `lpsa`.
+
+A Fisher's exact test, rather than a chi-square test, was used to compare subcategory proportions for `score` between cases of seminal invasion and no seminal invasion, because the Gleason score subcategories for cases of seminal invasion have particularly low counts. The overal *p*-value for this test is 8.71e-05, and the specific subcategories that correspond to the significant difference in Gleason scores between seminal invasion and no seminal invasion cases can be determined with the reported 95% confidence intervals for each proportion (converted to a percentage). Notably, a score of 6 is much lower than expected in cases of seminal invasion while a score of 8 is much higher than expected in cases of seminal invasion.
+
+For each of the three ordered categories within the `score` variable, one-way ANOVA tests were used to compare the group means for normally distributed continuous variables whereas Kruskal-Wallis rank sum tests were used to compare the group medians for non-normally distributed continuous variables. Similar to the `seminal` variable analysis, there are significant differences between the `lpsa`, `lcancerv`, and `capsular` clinical measures when grouped by `score` values of 6 and 8 as well as `score` values of 7 and 8.
+
+```{r}
+#| label: tbl-cat-stats
+#| layout-nrow: 2
+#| tbl-cap: Inferential statistics with categorical dependents
+#| tbl-subcap: 
+#|   - Boolean seminal variable
+#|   - Ordered score variable
+
+# t.test(pcanc.log$lpsa ~ pcanc.log$seminal)
+# t.test(pcanc.log$lcancerv ~ pcanc.log$seminal)
+# t.test(pcanc.log$lweight ~ pcanc.log$seminal)
+# t.test(pcanc.log$capsular ~ pcanc.log$seminal)
+
+pcanc.log %>%
+  tbl_summary(
+    by = seminal,
+    statistic = list(all_continuous() ~ "{mean}",
+                     all_categorical() ~ "{n} = {p}%")) %>%
+  add_p(test = list(
+    lpsa ~ "t.test",
+    lcancerv ~ "t.test",
+    lweight ~ "t.test",
+    age ~ "t.test",
+    capsular ~ "wilcox.test",
+    hyperplasia ~ "wilcox.test"
+  )) %>%
+  add_ci(pattern = "{stat} ({ci})") %>%
+  # add a header to the statistic column, which is hidden by default
+  # adding the header will also unhide the column
+  modify_header(label = "**Variable**",
+                all_stat_cols() ~ "**{level}**, N = {n}",
+                statistic ~ "**Test Statistic**") %>%
+  modify_footnote(all_stat_cols() ~ "Mean (95% CI) for continuous; n = % (95% CI) for catagorical") %>% 
+  modify_fmt_fun(statistic ~ style_sigfig) %>% 
+  modify_table_styling(
+    columns = p.value,
+    rows = p.value < 0.001,
+    fmt_fun = scales::scientific)
+
+
+# pcanc.log %>%
+#   tbl_cross(row = score, 
+#             col = seminal) %>% 
+#   add_p() %>% 
+#   modify_table_styling(
+#     columns = p.value,
+#     rows = p.value < 0.001,
+#     fmt_fun = scales::scientific
+#   )
+
+
+dplyr::select(pcanc.log, -seminal) %>%
+  tbl_summary(
+    by = score,
+    statistic = list(all_continuous() ~ "{mean}")
+    ) %>%
+  add_p(test = list(
+    lpsa ~ "aov",
+    lcancerv ~ "aov",
+    lweight ~ "aov",
+    age ~ "aov",
+    capsular ~ "kruskal.test",
+    hyperplasia ~ "kruskal.test"
+  )) %>%
+  add_ci(pattern = "{stat} ({ci})") %>%
+  # add a header to the statistic column, which is hidden by default
+  # adding the header will also unhide the column
+  modify_header(label = "**Variable**",
+                all_stat_cols() ~ "**{level}**, N = {n}",
+                statistic ~ "**Test Statistic**") %>%
+  modify_footnote(all_stat_cols() ~ "Mean (95% CI)") %>% 
+  modify_fmt_fun(statistic ~ style_sigfig) %>% 
+  modify_table_styling(
+    columns = p.value,
+    rows = p.value < 0.001,
+    fmt_fun = scales::scientific)
+```
+
+The difference in Gleason scores between seminal invasion and no seminal invasion (and vice versa: the difference in seminal invasion for each of the Gleason score categories) is more clearly visualized in @fig-ss-plot when the subcategory counts are converted to proportions.
+
+```{r}
+#| label: fig-ss-plot
+#| layout-nrow: 2
+#| fig-cap: Comparsion of categorical variables. For each comparison (a & b), the 2 subplots include (i) a bar plot of counts by main category colored by subcategory and (ii) a bar plot of proportions colored by subcategory.
+#| fig-subcap: 
+#|   - seminal ~ score
+#|   - score ~ seminal
+
+plot.ss1 <- ggplot(pcanc.log, aes(x=score,fill=seminal)) +
+  geom_bar(alpha = 0.6) +
+  labs(x="Gleason Score",
+       y="Count",
+       fill="Seminal Invasion") +
+  scale_fill_manual(values = c("darkblue", "darkred")) +
+  theme_classic() + 
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1, face = "bold"),
+        panel.grid.major.y = element_line(color = "gray")) +
+  marg 
+
+plot.ss2 <- ggplot(pcanc.log, aes(x=seminal,fill=score)) +
+  geom_bar(alpha = 0.6) +
+  labs(x="Seminal Invasion",
+       y="Count",
+       fill="Gleason Score") +
+  scale_fill_manual(values = c("darkgreen", "gold3", "darkred")) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1, face = "bold"),
+        panel.grid.major.y = element_line(color = "gray")) +
+  marg
+
+df.ss <- pcanc.log %>% group_by(score,seminal) %>% summarise(n=n()) %>% mutate(prop = n/sum(n))
+
+df.ss2 <- pcanc.log %>% group_by(seminal,score) %>% summarise(n=n()) %>% mutate(prop = n/sum(n))
+
+plot.ss3 <- ggplot(df.ss, aes(x=score,y=prop,fill=seminal)) +
+  geom_col(alpha = 0.6) +
+  labs(x="Gleason Score",
+       y="Proportion",
+       fill="Seminal Invasion") +
+  scale_fill_manual(values = c("darkblue", "darkred")) +
+  theme_classic() + 
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1, face = "bold"),
+        panel.grid.major.y = element_line(color = "gray")) +
+  marg 
+
+plot.ss4 <- ggplot(df.ss2, aes(x=seminal,y = prop, fill=score)) +
+  geom_col(alpha = 0.6) +
+  labs(x="Seminal Invasion",
+       y="Proportion",
+       fill="Gleason Score") +
+  scale_fill_manual(values = c("darkgreen", "gold3", "darkred")) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1, face = "bold"),
+        panel.grid.major.y = element_line(color = "gray")) +
+  marg
+
+# x.mat <- matrix(df.ss$n,nrow=2,ncol=3)
+# (c <- chisq.test(x.mat))
+# c$observed
+# c$expected
+# (100*c$residuals^2/c$statistic)
+# 
+# fisher.test(x.mat)
+
+plot.ss2 + plot.ss4 + plot_layout(guides = "collect") + plot_annotation(tag_levels = 'i')
+plot.ss1 + plot.ss3 + plot_layout(guides = "collect") + plot_annotation(tag_levels = 'i')
+```
+
+Given the statistically significant differences in various clinical measures within the Gleason score categories, a model that predicts prostate cancer pathology (`score`) based on these measures could also be useful. Ordinal logistic regression, a tool for predicting ordered categorical outcomes, was used to achieve this. The model's resulting odds ratios are outlined in @tbl-clm, with only the `lpsa` predictor having a significant odds ratio (OR) of 2.07. This implies that for each unit increase in `lpsa` (holding all other predictors constant), the odds of being in a higher outcome category are multiplied by 2.07. The 95% CI for `lpsa` ranges from 1.12 to 3.99, excluding any value less than or equal to 1, implying that its positive correlation is statistically significant. Although three other predictors that were expected to be positively correlated from the analysis in @tbl-cat-stats have ORs greater than 1, they do not have 95% CIs entirely above 1 and are therefore not statistically significant. A Brant test for the critical ordinal logistic regression assumption of proportional odds shows that only `lpsa` meets the assumption with a *p*-value less than 0.05. Consequently, only `lpsa` can be used as a predictor in this type of regression.
+
+```{r}
+#| label: tbl-clm
+#| layout-ncol: 2
+#| tbl-cap: Ordinal logistic regression
+#| tbl-subcap: 
+#|   - odds ratios
+#|   - brant test
+
+pcanc.clm <- pcanc.log %>% 
+  mutate(score = factor(score, 
+                        levels = c(0,1,2),
+                        labels = c("6", "7", "8")),
+         seminal = factor(seminal,
+                          levels = c(0, 1),
+                          labels = c("TRUE", "FALSE")))
+
+null.mod <- clm(score ~ 1,
+                data = pcanc.log,
+                link = "logit")
+clm.mod <- clm(score ~ lpsa + lcancerv + lweight + hyperplasia + seminal + capsular, 
+                data = pcanc.log,
+                link = "logit")
+
+# anova(null.mod, clm.mod)
+
+tbl_regression(clm.mod, 
+               exponentiate = TRUE) %>%
+  modify_header(label = "**Predictor**") 
+
+nominal_test(clm.mod) %>% 
+  as.data.frame() %>%
+  mutate_at(c("logLik", "AIC", "LRT"), function(x) round(x, 2)) %>% 
+  mutate_at(c("Pr(>Chi)"), function(x) round(x, 3)) %>% 
+  rownames_to_column("Predictor") %>% 
+  # knitr::kable() # for docx
+  gt() %>%
+  cols_align("center", columns = -"Predictor") %>%
+  cols_label(
+    Predictor = md("**Predictor**"),
+    Df = md("**df**"),
+    logLik = md("**log(lik)**"),
+    AIC = md("**AIC**"),
+    LRT = md("**LRT**"),
+    `Pr(>Chi)` = md("**p-value**")
+  ) %>%
+  tab_footnote(
+    footnote = md("df = degrees of freedom"),
+    locations = cells_column_labels(columns = Df)
+  ) %>%
+  tab_footnote(
+    footnote = md("log(lik) = log of likelihood"),
+    locations = cells_column_labels(columns = logLik)
+  ) %>%
+  tab_footnote(
+    footnote = md("AIC = Akaike Information Criterion"),
+    locations = cells_column_labels(columns = AIC)
+  ) %>%
+  tab_footnote(
+    footnote = md("LRT = likelihood-ratio test"),
+    locations = cells_column_labels(columns = LRT)
+  ) %>%
+  sub_missing(
+    columns = everything(),
+    rows = everything(),
+    missing_text = "---"
+  )
+```
+
+## Methods
+
+**Logarithmic transformation**
+
+Log transfromations were carried out for the variables `psa`, `cancerv`, and `weight` to reduce skewness and achieve more normal distributions. This transformation is described by the equation:
+
+$Y = \log(X)$
+
+**Descriptive statistics**
+
+Numerous statistics were calculated for initial data analysis and are basic components of the various statistical tests described hereafter.
+
+-   The arithmetic mean is computed as
+
+    $\bar{X} = \frac{1}{N}\sum_{i=1}^{N} x_i$
+
+    , where $N$ is the number of observations and $x_i$​ are the individual observations.
+
+-   Quartiles, including the median (Q2), are calculated as follows to divide the dataset into four equal parts, where $X$ are the ordered observations and $N$ is the total number of observations.
+
+    $Q1 = X_{\frac{N+1}{4}}, Q2 = X_{\frac{N+1}{2}}, Q3 = X_{\frac{3(N+1)}{4}}$
+
+-   The sample standard deviation is computed as
+
+    $s = \sqrt{\frac{1}{n-1}\sum_{i=1}^{n}(x_i - \bar{x})^2}$
+
+    , where $n$ is the sample size, $x_i$ is each value from the sample, and $\bar{x}$ is the sample mean. Sample variance is simply the standard deviation squared.
+
+**Pearson correlation coefficient**
+
+Pearson correlation coefficients were used to represent the strength of relationships between all continuous variables in the dataset. This correlation coefficient is calculated as:
+
+$r = \frac{1}{n-1}\sum_{i=1}^{n} \left( \frac{x_i-\bar{x}}{s_x} \right) \left( \frac{y_i-\bar{y}}{s_y} \right)$
+
+, where $x_i$ and $y_i$ are the individual sample points indexed with $i$, $\bar{x}$ and $\bar{y}$ are the sample means, and $s_x$ and $s_y$ are the sample standard deviations.
+
+**Multiple linear regression**
+
+Multiple linear regression was used to assess the effect of explanatory variables on `lpsa`. This type of regression uses a linear combination to model a continuous outcome, as seen in the equation:
+
+$Y_i = \beta_0 + \beta_1X_{i1} + \beta_2X_{i2} + … + \beta_kX_{ik} + \epsilon_i$
+
+, where $X_{ij}$ is the fixed, known value of the $j^{th}$ independent variable for the $i^{th}$ measurement. $\beta_0$ is the fixed, unknown y-intercept, $\beta_j$ is the fixed, unknown slope (beta coefficient) relating the $j^{th}$ independent variable to the outcome $Y$, and $\epsilon_i$ is a random coefficient with mean 0 and variance $\sigma^2$.
+
+Importantly, the model assumes that i) the outcome $Y$ is a linear combination of effects, ii) there is only random noise (constant in variance for all values of $X_{ij}$) remaining after we have accounted for the regression, and iii) the data are a random sample. After multiple linear regression is performed to obtain estimated beta coefficients and their standard errors, the *t-*statistic for each beta coefficient is defined as:
+
+$t = \frac{\hat{\beta}_j - 0}{SE(\hat{\beta}_j)}$
+
+, where $\hat{\beta_j}$ is the estimated coefficient for the $j^{th}$ predictor and $SE(\hat{\beta_j})$ is its standard error ($\sigma/\sqrt{n}$). In other words, this tests the null hypothesis that the true value of the beta coefficient is zero, which would mean itis not a predictor for $Y$. The null and alternative hypotheses for $\beta_1$ are demonstrated below.
+
+$H_0: \beta_0 + \beta_2X_{i2} + … + \beta_kX_{ik} + \epsilon_i$
+
+$H_1: \beta_0 + \beta_1X_{i1} + \beta_2X_{i2} + … + \beta_kX_{ik} + \epsilon_i$
+
+**Welch two sample t-test**
+
+Welch two sample t-tests were used to compare the means of normally distributed variables when grouped by a binary variable. The *t*-statistic in a Welch two sample t-test is computed as:
+
+$t = \frac{\bar{X}_1 - \bar{X}_2}{\sqrt{\frac{s_1^2}{n_1} + \frac{s_2^2}{n_2}}}$,
+
+, where $\bar{X}_1$ and $\bar{X}_2$ are the sample means, $s^2_1$ and $s^2_2$ are the sample variances, and $n_1$ and $n_2$ are the sample sizes. The null and alternative hypotheses for this test are $H_0:\bar{X}_1 = \bar{X}_2$ and $H_1: \bar{X}_1 \neq \bar{X}_2$, respectively.
+
+**One-way ANOVA**
+
+One-way ANOVAs were used to compare the means of normally distributed variables when grouped into more than 2 categories. The *F*-statistic in a one-way ANOVA is computed as:
+
+$F = \frac{MST}{MSE}$
+
+, where $MST$ is the variance between groups and $MSE$ is the variance within groups. $F$ is approximately equal to 1 when $H_0: \bar{X_1}$ = $\bar{X_2}$ = $\bar{X_3}$, and $F$ is greater than 1 when $H_1: \text{at least one } \bar{X_j} \neq \bar{X_j}$.
+
+**Non-parametric tests**
+
+The Wilcoxon rank sum test and Kruskal-Wallis rank sum test are non-parametric median-comparing equivalents to the mean-comparing Welch two sample t-test and one-way ANOVA, respectively. These tests do not have simple formula representations, because they require ranking of the observations from two or more samples. Although non-parametric tests are important for comparing groups that don't meet the assumptions of parametric tests (normality and equal variance within groups), they are less powerful from stripping away the actual value of the data and replacing it with ranks, making it harder to identify differences and associations as easily. In other words, these tests are less likely to give a false positive result and more likely to give a false negative.
+
+**Fisher's exact test**
+
+A Fisher's exact test was used to compare the proportions of `seminal` when grouped by `score`. This is an all-purpose test for comparing subcategory proportions with the null hypothesis $H_0: \pi_1 = \pi_2$ and alternative hypothesis $H_1:\pi_1 \neq \pi_2$. Unlike the chi-square test, it works well for comparing subcategories with a low number of observations, but its calculation is much more intensive.
+
+**Ordinal logistic regression**
+
+Ordinal logistic regression was used to assess the effect of explanatory variables on `score`. This type of regression uses a linear combination to model an ordered categorical outcome with a cumulative logit link function, as seen in the equation:
+
+$\log\left(\frac{P(Y \leq j)}{1 - P(Y \leq j)}\right) = \alpha_j + \beta_1X_1 + \beta_2X_2 + … + \beta_kX_k,\text{ }j=1,...,J-1$
+
+, $k$ represents the number of explanatory variables, $j$ is one of the ordered categories of the response variable, and $J$ represents the number of levels in the categorical response variable. The outcome of interest is observing $Y \leq j$ in the log of the odds ratio (to the left of the equals sign). The model will have $J-1$ cutoffs (i.e. intercepts or threshold values), denoted by $a_j$, and one parameter for each explanatory variable. This allows the intercept to vary for each cumulative logit. However, the model assumes that each explanatory variable exerts the same effect on each cumulative logit.
+
+A Brant test was used to assess the proportional odds assumption that the relationship between the predictor variables and the cumulative odds of the response categories remains constant across all levels of the response variable.
+
+## Discussion
+
+This report's exploration of the Prostate Cancer Dataset confirms important findings about the relationship between PSA levels and numerous clinical variables from a previous comprehensive histopathological and statistical analysis of 97 prostate cancer patients [@Stamey1989; @hastie2009]. However, the results uncovered here also merit further investigation and raise questions about the data, the modeling techniques used, and even potential clinical implications. For example, data transformation by log conversion was required to correct skewness and achieve normality for several variables. While this is an effective statistical remedy to prepare data for parametric tests and satisfy the assumptions of regression models, the clinical interpretability of the transformed data can become more complex. Thus, practitioners should be aware of these transformations when interpreting results.
+
+An initial multiple linear regression model was fit to the log of prostate specific antigen (lpsa) using all seven other variables. Vetting of predictors for a second multiple linear regression model was based on statistical significance of the beta coefficients in the first model, resulting in a simpler model with an overall lower type I error rate. However, this practice could potentially exclude variables that have clinical significance. Age, for example, did not significantly predict lpsa in this report, but in a clinical context, age is a known risk factor for prostate cancer. In fact, cancer as a whole is often defined as "a disease of ageing". This discrepancy underscores a potential limitation of using statistical significance as the sole criterion for model predictor selection. Since the dataset is derived from men about to undergo a radical prostatectomy, it likely has an inherent bias towards more aggressive cases, reducing the generalizability of the results while masking the affect of an age variable with very low variance. Therefore, future research should validate these findings in other patient groups and, if possible, in longitudinal studies for investigation of causality.
+
+The Fisher exact test finding that seminal invasion is strongly associated with higher Gleason scores may have been expected, as more aggressive cancers (represented by higher Gleason scores) likely have an increased propensity for invading surrounding tissues like the seminal vesicles. Yet, Gleason score could not be predicted by the occurrence of seminal invasion in an ordinal logistic regression model, where only the lpsa predictor shows statistical significance. This outcome highlights the complexity of predicting ordered categorical outcomes and may require future studies with alternative models to investigate. More specifically, machine learning algorithms, which can handle more complex interactions and nonlinear relationships, might prove more successful in this area.
+
+In any case, accurately predicting patient outcomes will require a multifactorial approach that encompasses the clinical measures discussed here, as well as others not included in the dataset. Incorporating genomic data, lifestyle factors, and other potential predictors would likely improve the prediction models and lead to a more comprehensive understanding of the disease development. Future studies should aim to replicate these results in different populations, explore other predictive modeling techniques, and incorporate a wider range of predictors.
